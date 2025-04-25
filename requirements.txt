@@ -1,6 +1,6 @@
 asgiref
 uvicorn
-guinicorn
+gunicorn
 fastapi
 Flask==3.1.0
 insightface==0.7.3
