@@ -31,11 +31,11 @@ if not os.path.exists(fp32_model):
 if not os.path.exists(int8_model):
     print(f"[+] Quantizing {fp32_model} to INT8 -> {int8_model}")
     quantize_dynamic(
-        model_input=fp32_model,
-        model_output=int8_model,
-        weight_type=QuantType.QUInt8,
-        optimize_model=True
-    )
+        model_input='models/inswapper_128.onnx',
+        model_output='models/inswapper_128_int8.onnx',
+        weight_type=QuantType.QInt8
+        )
+
 
 # Choose the quantized model if available
 model_path = int8_model if os.path.exists(int8_model) else fp32_model
