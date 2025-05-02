@@ -7,6 +7,8 @@ import insightface
 from insightface.app import FaceAnalysis
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
+
+
 # Setup
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -33,15 +35,14 @@ if not os.path.exists(int8_model):
     quantize_dynamic(
         model_input=fp32_model,
         model_output=int8_model,
-        weight_type=QuantType.QUInt8,
-        optimize_model=True
+        weight_type=QuantType.QUInt8
     )
 
 # Choose the quantized model if available
 model_path = int8_model if os.path.exists(int8_model) else fp32_model
 
 # Load InsightFace models
-face_analyzer = FaceAnalysis(name='buffalo_l')
+face_analyzer = FaceAnalysis(name='buffalo_l', allowed_modules=['detection', 'recognition', 'landmark', 'genderage'])
 face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
 swapper = insightface.model_zoo.get_model(model_path)
 
