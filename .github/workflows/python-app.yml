@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flake8 pytest
+          pip install flake8 pytest gunicorn
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Lint with flake8
@@ -32,16 +32,12 @@ jobs:
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-      - name: Start Flask app
+      - name: Start Gunicorn
         env:
-          FLASK_APP: faceswap.py         # <- point to your main Flask module
+          FLASK_APP: app.py         # ← your Flask entrypoint
         run: |
-          # run in background and redirect logs
-          nohup flask run --host=0.0.0.0 --port=5000 &> flask.log &
-          # give it a moment to start
-          sleep 5
+          # launch Gunicorn in the background
+          nohup gunicorn "app:app" --bind 0.0.0.0:5000 --workers 2 &> gunicorn.log &
+          echo "🎯 Gunicorn running at http://localhost:5000"
 
-      # Optional: verify that the server is responding
-      - name: Smoke-test Flask
-        run: |
-          curl --fail http://localhost:5000/   # adjust path as needed
+      # (No smoke-test here; tests can target localhost:5000 if you later add them)
