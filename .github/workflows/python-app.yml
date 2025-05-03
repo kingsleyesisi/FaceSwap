@@ -34,10 +34,10 @@ jobs:
 
       - name: Start Gunicorn
         env:
-          FLASK_APP: app.py         # ← your Flask entrypoint
+          FLASK_APP: faceswap.py         # ← your Flask entrypoint
         run: |
           # launch Gunicorn in the background
-          nohup gunicorn "app:app" --bind 0.0.0.0:5000 --workers 2 &> gunicorn.log &
+          nohup gunicorn "faceswap:app" --bind 0.0.0.0:5000 --workers 2 &> gunicorn.log &
           echo "🎯 Gunicorn running at http://localhost:5000"
 
       # (No smoke-test here; tests can target localhost:5000 if you later add them)
