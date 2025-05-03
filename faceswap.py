@@ -8,7 +8,6 @@ from insightface.app import FaceAnalysis
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
 
-
 # Setup
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -30,19 +29,22 @@ if not os.path.exists(fp32_model):
     gdown.download(drive_url, fp32_model, quiet=False)
 
 # Quantize to INT8 if missing
-if not os.path.exists(int8_model):
-    print(f"[+] Quantizing {fp32_model} to INT8 -> {int8_model}")
-    quantize_dynamic(
-        model_input=fp32_model,
-        model_output=int8_model,
-        weight_type=QuantType.QUInt8
-    )
+from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat
+
+quantize_dynamic(
+    model_input=fp32_model,
+    model_output=int8_model,
+    weight_type=QuantType.QUInt8,
+    per_channel=False,               # disable per-channel so emap isn’t broken
+    op_types_to_quantize=['MatMul'], # quantize only MatMul, not Gemm or initializers
+)
+
 
 # Choose the quantized model if available
 model_path = int8_model if os.path.exists(int8_model) else fp32_model
 
 # Load InsightFace models
-face_analyzer = FaceAnalysis(name='buffalo_l', allowed_modules=['detection', 'recognition', 'landmark', 'genderage'])
+face_analyzer = FaceAnalysis(name='buffalo_l', allowed_modules=['detection', 'recognition', 'landmark'])
 face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
 swapper = insightface.model_zoo.get_model(model_path)
 
