@@ -1,10 +1,11 @@
 import os
 import cv2
 import gdown
-from flask import Flask, request, jsonify, send_file
-from werkzeug.utils import secure_filename
-import insightface
+import base64
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import Response
 from insightface.app import FaceAnalysis
+import insightface
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
 # === Configuration ===
@@ -14,77 +15,84 @@ MODEL_DIR = 'models'
 FP32_MODEL = os.path.join(MODEL_DIR, 'inswapper_128.onnx')
 INT8_MODEL = os.path.join(MODEL_DIR, 'inswapper_128_int8.onnx')
 DRIVE_URL = 'https://drive.google.com/uc?id=1krOLgjW2tAPaqV-Bw4YALz0xT5zlb5HF'
+MAX_DIM = 512  # max width/height to reduce memory footprint
 
-# === App Setup ===
-app = Flask(__name__)
+# Create folders
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULT_FOLDER, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# === Download and Quantize ONNX Model ===
-if not os.path.exists(FP32_MODEL):
-    print(f"[+] Downloading FP32 model to {FP32_MODEL}")
-    gdown.download(DRIVE_URL, FP32_MODEL, quiet=False)
-
-if not os.path.exists(INT8_MODEL):
-    print(f"[+] Quantizing model to INT8: {INT8_MODEL}")
-    quantize_dynamic(
-        model_input=FP32_MODEL,
-        model_output=INT8_MODEL,
-        weight_type=QuantType.QUInt8,
-        per_channel=False,
-        op_types_to_quantize=["MatMul"]
-    )
-
+# Download FP32 model if missing
+def ensure_model():
+    if not os.path.exists(FP32_MODEL):
+        gdown.download(DRIVE_URL, FP32_MODEL, quiet=False)
+    if not os.path.exists(INT8_MODEL):
+        quantize_dynamic(
+            model_input=FP32_MODEL,
+            model_output=INT8_MODEL,
+            weight_type=QuantType.QUInt8,
+            per_channel=False
+        )
+ensure_model()
 model_path = INT8_MODEL if os.path.exists(INT8_MODEL) else FP32_MODEL
 
-# === Load InsightFace ===
-face_analyzer = FaceAnalysis(name='buffalo_l', allowed_modules=['detection', 'recognition', 'landmark'])
-face_analyzer.prepare(ctx_id=-1, det_size=(640, 640))  # use CPU with ctx_id = -1
+# Setup InsightFace with lighter detector
+face_analyzer = FaceAnalysis(
+    name='antelope',               # smaller model (~100MB)
+    allowed_modules=['detection', 'landmark']
+)
+face_analyzer.prepare(ctx_id=-1, det_size=(320, 320))  # CPU only
 swapper = insightface.model_zoo.get_model(model_path)
 
-# === Helpers ===
-def save_file(file, folder):
-    filename = secure_filename(file.filename)
-    path = os.path.join(folder, filename)
-    file.save(path)
+# FastAPI app\ app = FastAPI()
+
+# Utility: save UploadFile to disk
+async def save_upload(file: UploadFile, folder: str) -> str:
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, file.filename)
+    with open(path, 'wb') as f:
+        f.write(await file.read())
     return path
 
-# === Routes ===
-@app.route('/swap', methods=['POST'])
-def swap_faces():
-    if 'target' not in request.files or 'source' not in request.files:
-        return jsonify({'error': 'Missing image(s). Upload both target and source.'}), 400
+# Utility: downscale image to max dimension
+def resize_image(img):
+    h, w = img.shape[:2]
+    scale = min(MAX_DIM / max(h, w), 1.0)
+    if scale < 1.0:
+        return cv2.resize(img, (int(w*scale), int(h*scale)))
+    return img
 
-    target_path = save_file(request.files['target'], UPLOAD_FOLDER)
-    source_path = save_file(request.files['source'], UPLOAD_FOLDER)
+@app.post('/swap')
+async def swap_faces(target: UploadFile = File(...), source: UploadFile = File(...)):
+    # Save uploads
+    tgt_path = await save_upload(target, UPLOAD_FOLDER)
+    src_path = await save_upload(source, UPLOAD_FOLDER)
 
-    img_target = cv2.imread(target_path)
-    img_source = cv2.imread(source_path)
+    # Read and resize
+    img_tgt = cv2.imread(tgt_path)
+    img_src = cv2.imread(src_path)
+    if img_tgt is None or img_src is None:
+        raise HTTPException(status_code=400, detail='Invalid image files')
+    img_tgt = resize_image(img_tgt)
+    img_src = resize_image(img_src)
 
-    if img_target is None or img_source is None:
-        return jsonify({'error': 'Could not read one or both images.'}), 400
+    # Detect faces
+    faces_tgt = face_analyzer.get(img_tgt)
+    faces_src = face_analyzer.get(img_src)
+    if not faces_tgt or not faces_src:
+        raise HTTPException(status_code=400, detail='No faces detected')
 
-    faces_target = face_analyzer.get(img_target)
-    faces_source = face_analyzer.get(img_source)
+    # Perform swap
+    face_t = faces_tgt[0]
+    face_s = faces_src[0]
+    out_img = swapper.get(img_tgt.copy(), face_t, face_s, paste_back=True)
 
-    if not faces_target or not faces_source:
-        return jsonify({'error': 'Could not detect face(s) in one or both images.'}), 400
+    # Encode to JPEG
+    success, buffer = cv2.imencode('.jpg', out_img)
+    if not success:
+        raise HTTPException(status_code=500, detail='Failed to encode output')
+    return Response(content=buffer.tobytes(), media_type='image/jpeg')
 
-    face_target = faces_target[0]
-    face_source = faces_source[0]
-
-    swapped_img = swapper.get(img_target.copy(), face_target, face_source, paste_back=True)
-
-    result_path = os.path.join(RESULT_FOLDER, f"swapped_{os.path.basename(target_path)}")
-    cv2.imwrite(result_path, swapped_img)
-
-    return send_file(result_path, mimetype='image/jpeg')
-
-@app.route('/health', methods=['GET'])
+@app.get('/health')
 def health():
-    return jsonify({"status": "ok"}), 200
-
-# === Run App (For local testing only) ===
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8000, debug=False)
+    return {'status': 'ok'}
