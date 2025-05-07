@@ -7,54 +7,50 @@ import insightface
 from insightface.app import FaceAnalysis
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
-
-# Setup
-app = Flask(__name__)
+# === Configuration ===
 UPLOAD_FOLDER = 'uploads'
 RESULT_FOLDER = 'results'
 MODEL_DIR = 'models'
+FP32_MODEL = os.path.join(MODEL_DIR, 'inswapper_128.onnx')
+INT8_MODEL = os.path.join(MODEL_DIR, 'inswapper_128_int8.onnx')
+DRIVE_URL = 'https://drive.google.com/uc?id=1krOLgjW2tAPaqV-Bw4YALz0xT5zlb5HF'
 
+# === App Setup ===
+app = Flask(__name__)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULT_FOLDER, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Model paths and download URL
-fp32_model = os.path.join(MODEL_DIR, 'inswapper_128.onnx')
-int8_model = os.path.join(MODEL_DIR, 'inswapper_128_int8.onnx')
-drive_url = 'https://drive.google.com/uc?id=1krOLgjW2tAPaqV-Bw4YALz0xT5zlb5HF'
+# === Download and Quantize ONNX Model ===
+if not os.path.exists(FP32_MODEL):
+    print(f"[+] Downloading FP32 model to {FP32_MODEL}")
+    gdown.download(DRIVE_URL, FP32_MODEL, quiet=False)
 
-# Download FP32 model if missing
-if not os.path.exists(fp32_model):
-    print(f"[+] Downloading FP32 model to {fp32_model}")
-    gdown.download(drive_url, fp32_model, quiet=False)
+if not os.path.exists(INT8_MODEL):
+    print(f"[+] Quantizing model to INT8: {INT8_MODEL}")
+    quantize_dynamic(
+        model_input=FP32_MODEL,
+        model_output=INT8_MODEL,
+        weight_type=QuantType.QUInt8,
+        per_channel=False,
+        op_types_to_quantize=["MatMul"]
+    )
 
-# Quantize to INT8 if missing
-from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat
+model_path = INT8_MODEL if os.path.exists(INT8_MODEL) else FP32_MODEL
 
-quantize_dynamic(
-    model_input=fp32_model,
-    model_output=int8_model,
-    weight_type=QuantType.QUInt8,
-    per_channel=False,               # disable per-channel so emap isn’t broken
-    op_types_to_quantize=['MatMul'], # quantize only MatMul, not Gemm or initializers
-)
-
-
-# Choose the quantized model if available
-model_path = int8_model if os.path.exists(int8_model) else fp32_model
-
-# Load InsightFace models
+# === Load InsightFace ===
 face_analyzer = FaceAnalysis(name='buffalo_l', allowed_modules=['detection', 'recognition', 'landmark'])
-face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
+face_analyzer.prepare(ctx_id=-1, det_size=(640, 640))  # use CPU with ctx_id = -1
 swapper = insightface.model_zoo.get_model(model_path)
 
-# Helper to save uploaded files
+# === Helpers ===
 def save_file(file, folder):
     filename = secure_filename(file.filename)
     path = os.path.join(folder, filename)
     file.save(path)
     return path
 
+# === Routes ===
 @app.route('/swap', methods=['POST'])
 def swap_faces():
     if 'target' not in request.files or 'source' not in request.files:
@@ -65,6 +61,9 @@ def swap_faces():
 
     img_target = cv2.imread(target_path)
     img_source = cv2.imread(source_path)
+
+    if img_target is None or img_source is None:
+        return jsonify({'error': 'Could not read one or both images.'}), 400
 
     faces_target = face_analyzer.get(img_target)
     faces_source = face_analyzer.get(img_source)
@@ -82,5 +81,10 @@ def swap_faces():
 
     return send_file(result_path, mimetype='image/jpeg')
 
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"}), 200
+
+# === Run App (For local testing only) ===
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=8000, debug=False)
